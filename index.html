@@ -1,0 +1,374 @@
+<!DOCTYPE html>
+<html lang="en">
+	<head>
+		<meta charset="utf-8">
+		<meta name="viewport" content="width=device-width, user-scalable=no, initial-scale=1.0">
+		<title>Mainspring</title>
+		<meta name="theme-color" content="#1b1714">
+		<style>
+html, body, #canvas {
+	margin: 0;
+	padding: 0;
+	border: 0;
+}
+
+body {
+	color: white;
+	background-color: #1b1714;
+	overflow: hidden;
+	touch-action: none;
+}
+
+#canvas {
+	display: block;
+}
+
+#canvas:focus {
+	outline: none;
+}
+
+#status, #status-splash, #status-progress {
+	position: absolute;
+	left: 0;
+	right: 0;
+}
+
+#status, #status-splash {
+	top: 0;
+	bottom: 0;
+}
+
+#status {
+	background: radial-gradient(ellipse at 50% 38%, #2a231d 0%, #1b1714 70%);
+	display: flex;
+	flex-direction: column;
+	justify-content: center;
+	align-items: center;
+	visibility: hidden;
+	font-family: Georgia, 'Times New Roman', serif;
+	color: #e8d9a8;
+}
+
+#ms-title {
+	letter-spacing: 0.35em;
+	font-size: 22px;
+	color: #e3c47a;
+	margin: 0 0 26px 0.35em;
+}
+
+#ms-dial {
+	position: relative;
+	width: 150px;
+	height: 150px;
+	border-radius: 50%;
+	border: 6px solid #8a6a2c;
+	box-shadow: 0 0 0 2px #1b1714, 0 0 0 5px #c9a14a, inset 0 0 0 3px #1b1714;
+	background: conic-gradient(#e8d9a8 calc(var(--p, 0) * 1turn), #231d18 0);
+}
+
+#ms-dial::before {
+	content: '';
+	position: absolute;
+	inset: 14px;
+	border-radius: 50%;
+	background: repeating-conic-gradient(#8a6a2c 0 1.2deg, transparent 1.2deg 30deg), #2a231d;
+	-webkit-mask: radial-gradient(circle, transparent 52%, #000 53%);
+	mask: radial-gradient(circle, transparent 52%, #000 53%);
+}
+
+#ms-hand {
+	position: absolute;
+	left: 50%;
+	top: 50%;
+	width: 4px;
+	height: 58px;
+	margin-left: -2px;
+	background: #c9a14a;
+	border-radius: 2px;
+	transform-origin: 50% 0;
+	transform: rotate(calc(180deg + var(--p, 0) * 360deg));
+}
+
+#ms-hub {
+	position: absolute;
+	left: 50%;
+	top: 50%;
+	width: 14px;
+	height: 14px;
+	margin: -7px 0 0 -7px;
+	border-radius: 50%;
+	background: #5d6a70;
+	border: 2px solid #1b1714;
+}
+
+#ms-line {
+	margin-top: 24px;
+	font-size: 15px;
+	font-style: italic;
+}
+
+#ms-bytes {
+	margin-top: 6px;
+	font-size: 12px;
+	color: #8a6a2c;
+	min-height: 1em;
+}
+
+/* s95: after the last byte the engine still compiles and boots (8.6 s measured on slow 4G in a container).
+   Keep the dial visibly alive in that phase so it never reads as a hang. */
+#ms-dial.booting #ms-hand {
+	animation: ms-sweep 1.6s linear infinite;
+}
+
+@keyframes ms-sweep {
+	from { transform: rotate(180deg); }
+	to { transform: rotate(540deg); }
+}
+
+#ms-first {
+	margin-top: 14px;
+	max-width: 260px;
+	font-size: 12px;
+	line-height: 1.4;
+	text-align: center;
+	color: #a8946a;
+	min-height: 2.8em;
+}
+
+#status-notice {
+	display: none;
+	background-color: #3a1f17;
+	border-radius: 0.5rem;
+	border: 1px solid #d9452a;
+	color: #e8d9a8;
+	line-height: 1.3;
+	margin: 1.5rem 2rem 0;
+	overflow: hidden;
+	padding: 1rem;
+	text-align: center;
+	z-index: 1;
+}
+		</style>
+		<link id="-gd-engine-icon" rel="icon" type="image/png" href="index.icon.png" />
+<link rel="apple-touch-icon" href="index.apple-touch-icon.png"/>
+<link rel="manifest" href="index.manifest.json">
+
+	</head>
+	<body>
+		<canvas id="canvas" role="img" aria-label="Mainspring: a clockwork tower climbing game. On a touch screen use the left and right pads to run and the round pad to jump; tap the gear you ride to re-mesh it. On a keyboard, arrows run, space jumps, P pauses, M mutes.">
+			Your browser does not support the canvas tag.
+		</canvas>
+
+		<noscript>
+			Your browser does not support JavaScript.
+		</noscript>
+
+		<div id="status">
+			<div id="ms-title">MAINSPRING</div>
+			<div id="ms-dial"><div id="ms-hand"></div><div id="ms-hub"></div></div>
+			<div id="ms-line">winding the tower</div>
+			<div id="ms-bytes"></div>
+			<div id="ms-first"></div>
+			<div id="status-notice"></div>
+		</div>
+
+		<script>
+// s44: test-only audio probe (?drive=1 or ?probe=1). Counts what the engine hands to Web Audio,
+// so a headless run can prove sounds are actually scheduled. Normal play never runs this.
+if (/[?&](drive|probe)=1/.test(location.search)) {
+	const A = window.msAudio = { contexts: 0, states: [], starts: 0, worklets: 0, buffers: 0 };
+	const Orig = window.AudioContext;
+	if (Orig) {
+		window.AudioContext = function (...a) {
+			const c = new Orig(...a); A.contexts += 1; A.ctx = c;
+			c.addEventListener('statechange', () => A.states.push(c.state));
+			return c;
+		};
+		window.AudioContext.prototype = Orig.prototype;
+	}
+	const st = AudioScheduledSourceNode.prototype.start;
+	AudioScheduledSourceNode.prototype.start = function (...a) { A.starts += 1; return st.apply(this, a); };
+	// s65: buffer sources have their own start(); count those too (the game's web sounds use them)
+	if (window.AudioBufferSourceNode && AudioBufferSourceNode.prototype.hasOwnProperty('start')) {
+		const bs = AudioBufferSourceNode.prototype.start;
+		AudioBufferSourceNode.prototype.start = function (...a) { A.starts += 1; return bs.apply(this, a); };
+	}
+	const cb = BaseAudioContext.prototype.createBuffer;
+	BaseAudioContext.prototype.createBuffer = function (...a) { A.buffers += 1; return cb.apply(this, a); };
+	if (window.AudioWorkletNode) {
+		const W = window.AudioWorkletNode;
+		window.AudioWorkletNode = function (...a) { A.worklets += 1; return new W(...a); };
+		window.AudioWorkletNode.prototype = W.prototype;
+	}
+	// tap every context's speakers with an analyser and log loud 50 ms windows across all of them
+	// (s65: the game's sounds now use their own context, so tapping only the first missed them)
+	const conn = AudioNode.prototype.connect;
+	const tapped = new WeakSet(); const ans = [];
+	A.loud = 0; A.peak = 0; A.bursts = 0; let was = false; let timer = null;
+	AudioNode.prototype.connect = function (dst, ...a) {
+		if (dst instanceof AudioDestinationNode && !tapped.has(dst)) {
+			tapped.add(dst);
+			const an = dst.context.createAnalyser(); an.fftSize = 2048; A.an = an;
+			ans.push({ an: an, buf: new Float32Array(an.fftSize) });
+			if (!timer) timer = setInterval(() => {
+				let m = 0;
+				for (const t of ans) { t.an.getFloatTimeDomainData(t.buf); for (let i = 0; i < t.buf.length; i++) m = Math.max(m, Math.abs(t.buf[i])); }
+				A.peak = Math.max(A.peak, m); const on = m > 0.02;
+				if (on) A.loud += 1; if (on && !was) A.bursts += 1; was = on;
+			}, 50);
+		}
+		if (dst instanceof AudioDestinationNode) {
+			const t = ans.find((x) => x.an.context === dst.context);
+			if (t) conn.call(this, t.an);
+		}
+		return conn.call(this, dst, ...a);
+	};
+	A.snap = () => ({ contexts: A.contexts, state: A.ctx ? A.ctx.state : 'none', states: A.states, starts: A.starts, buffers: A.buffers, worklets: A.worklets, loud_windows: A.loud, bursts: A.bursts, peak: A.peak, time: A.ctx ? A.ctx.currentTime : 0 });
+}
+		</script>
+		<script src="index.js"></script>
+		<script>
+const GODOT_CONFIG = {"args":[],"canvasResizePolicy":2,"ensureCrossOriginIsolationHeaders":true,"executable":"index","experimentalVK":false,"fileSizes":{"index.pck":5088000,"index.wasm":19511780},"focusCanvas":true,"gdextensionLibs":[],"serviceWorker":"index.service.worker.js"};
+const GODOT_THREADS_ENABLED = false;
+const engine = new Engine(GODOT_CONFIG);
+
+(function () {
+	const statusOverlay = document.getElementById('status');
+	const statusDial = document.getElementById('ms-dial');
+	const statusBytes = document.getElementById('ms-bytes');
+	const statusLine = document.getElementById('ms-line');
+	const statusNotice = document.getElementById('status-notice');
+	const statusFirst = document.getElementById('ms-first');
+	// s95: first open on a slow connection is ~30 s (engine size floor); a cached visit was 4-6 s (s39).
+	// Say so only on a first open (no service worker controls this page yet).
+	if (!('serviceWorker' in navigator) || !navigator.serviceWorker.controller) {
+		statusFirst.textContent = 'first open is the slow one. after this the tower is kept on your device and opens in seconds.';
+	}
+
+	let initializing = true;
+	let statusMode = '';
+
+	function setStatusMode(mode) {
+		if (statusMode === mode || !initializing) {
+			return;
+		}
+		if (mode === 'hidden') {
+			statusOverlay.remove();
+			initializing = false;
+			return;
+		}
+		statusOverlay.style.visibility = 'visible';
+		statusNotice.style.display = mode === 'notice' ? 'block' : 'none';
+		statusMode = mode;
+	}
+
+	function setStatusNotice(text) {
+		while (statusNotice.lastChild) {
+			statusNotice.removeChild(statusNotice.lastChild);
+		}
+		const lines = text.split('\n');
+		lines.forEach((line) => {
+			statusNotice.appendChild(document.createTextNode(line));
+			statusNotice.appendChild(document.createElement('br'));
+		});
+	}
+
+	function displayFailureNotice(err) {
+		console.error(err);
+		if (err instanceof Error) {
+			setStatusNotice(err.message);
+		} else if (typeof err === 'string') {
+			setStatusNotice(err);
+		} else {
+			setStatusNotice('An unknown error occured');
+		}
+		setStatusMode('notice');
+		initializing = false;
+	}
+
+	const missing = Engine.getMissingFeatures({
+		threads: GODOT_THREADS_ENABLED,
+	});
+
+	if (missing.length !== 0) {
+		if (GODOT_CONFIG['serviceWorker'] && GODOT_CONFIG['ensureCrossOriginIsolationHeaders'] && 'serviceWorker' in navigator) {
+			// There's a chance that installing the service worker would fix the issue
+			Promise.race([
+				navigator.serviceWorker.getRegistration().then((registration) => {
+					if (registration != null) {
+						return Promise.reject(new Error('Service worker already exists.'));
+					}
+					return registration;
+				}).then(() => engine.installServiceWorker()),
+				// For some reason, `getRegistration()` can stall
+				new Promise((resolve) => {
+					setTimeout(() => resolve(), 2000);
+				}),
+			]).catch((err) => {
+				console.error('Error while registering service worker:', err);
+			}).then(() => {
+				window.location.reload();
+			});
+		} else {
+			// Display the message as usual
+			const missingMsg = 'Error\nThe following features required to run Godot projects on the Web are missing:\n';
+			displayFailureNotice(missingMsg + missing.join('\n'));
+		}
+	} else {
+		setStatusMode('progress');
+		// s39: Godot only installs the service worker when a feature is missing (threads builds).
+		// This build has no threads, so register it here so repeat visits and offline play use the cache.
+		if (GODOT_CONFIG['serviceWorker'] && 'serviceWorker' in navigator) {
+			engine.installServiceWorker().then((reg) => {
+				// s96 (critic s94 item 8): a new build's worker used to sit "waiting" until every tab of the
+				// game closed, so a phone kept serving the old cached build. Once a new worker has installed
+				// and an old one controls this page, tell it to take over (the worker's own 'claim' message:
+				// skipWaiting + clients.claim). No reload here, so a climb in progress is never cut off; the
+				// next open loads the new build.
+				if (!reg || !navigator.serviceWorker.controller) {
+					return;
+				}
+				// Measured s96 (tools/sw_update.py): re-registering the same script does not check for a new
+				// build, and the browser's own check after the navigation never fired in 3 opens. Ask for it.
+				reg.update().catch((err) => console.warn('service worker update check failed:', err));
+				const take = (w) => { if (w) { w.postMessage('claim'); } };
+				if (reg.waiting) {
+					take(reg.waiting);
+				}
+				reg.addEventListener('updatefound', () => {
+					const w = reg.installing;
+					if (!w) {
+						return;
+					}
+					w.addEventListener('statechange', () => {
+						if (w.state === 'installed') {
+							take(w);
+						}
+					});
+				});
+			}).catch((err) => console.warn('service worker not installed:', err));
+		}
+		engine.startGame({
+			'onProgress': function (current, total) {
+				if (current > 0 && total > 0) {
+					const p = Math.min(1, current / total);
+					statusDial.style.setProperty('--p', p.toFixed(4));
+					// s119 (critic pass 13 item 2): show real bytes so a slow first open reads as moving, not hung
+					// s120: no total (Godot's total is the unpacked size, ~4x the gzip download); the count still moves
+					// s131 (critic 17 item 7): 'MB unpacked' read as jargon; the dial already shows motion, so the line is just the percent
+					statusBytes.textContent = Math.floor(p * 100) + '%';
+					if (p >= 1) {
+						statusLine.textContent = 'setting the gears';
+						statusDial.classList.add('booting');
+					}
+				}
+			},
+		}).then(() => {
+			setStatusMode('hidden');
+		}, displayFailureNotice);
+	}
+}());
+		</script>
+	</body>
+</html>
+
